@@ -1,0 +1,9 @@
+cd /2022110148/ck/D-GAT-CA-Gate-ECFP
+conda activate DIFFUMOL
+
+nohup python -u train.py > Train_CAG_ECFP.log 2>&1 &
+
+
+nohup python generate.py --model_path ./weight/ema_0.9999_030000.pt --batch_size 128 --sample 10000 --out_dir ./generation_3w > gen_3w.log 2>&1 &
+nohup python evaluate/moses_test.py --path ./generation_3w/weight/molecules_None_None.csv > evaluation_3w.log 2>&1 &
+pgrep -fa train.py     pkill -f "python -u train.py"
