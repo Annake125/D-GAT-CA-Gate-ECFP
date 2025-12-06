@@ -60,6 +60,20 @@ def main():
             logger.log(f"### WARNING: fingerprint_dim in config ({args.fingerprint_dim}) doesn't match loaded fingerprint dimension ({fingerprint_embeddings.shape[1]})")
             logger.log(f"### Auto-updating fingerprint_dim to {fingerprint_embeddings.shape[1]}")
             args.fingerprint_dim = fingerprint_embeddings.shape[1]
+
+    # 加载Mol2vec嵌入
+    mol2vec_embeddings = None
+    if args.use_mol2vec:
+        logger.log(f"### Loading Mol2vec embeddings from {args.mol2vec_path}")
+        mol2vec_embeddings = torch.from_numpy(np.load(args.mol2vec_path))
+        logger.log(f"### Loaded Mol2vec embeddings with shape {mol2vec_embeddings.shape}")
+        logger.log(f"### Mol2vec dimension: {mol2vec_embeddings.shape[1]}")
+        # 验证维度匹配
+        if mol2vec_embeddings.shape[1] != args.mol2vec_dim:
+            logger.log(f"### WARNING: mol2vec_dim in config ({args.mol2vec_dim}) doesn't match loaded mol2vec dimension ({mol2vec_embeddings.shape[1]})")
+            logger.log(f"### Auto-updating mol2vec_dim to {mol2vec_embeddings.shape[1]}")
+            args.mol2vec_dim = mol2vec_embeddings.shape[1]
+
     tokenizer = load_tokenizer(args) 
     model_weight, tokenizer= load_model_emb(args, tokenizer) 
     
@@ -120,6 +134,7 @@ def main():
         model_emb=model_weight,
         graph_embeddings=graph_embeddings,  # 传入图嵌入
         fingerprint_embeddings=fingerprint_embeddings,  # 传入分子指纹
+        mol2vec_embeddings=mol2vec_embeddings,  # 传入Mol2vec嵌入
     )
 
     data_valid = load_data_text(
@@ -133,6 +148,7 @@ def main():
         model_emb=model_weight,
         graph_embeddings=graph_embeddings,  # 传入图嵌入
         fingerprint_embeddings=fingerprint_embeddings,  # 传入分子指纹
+        mol2vec_embeddings=mol2vec_embeddings,  # 传入Mol2vec嵌入
     )
 
     print('#'*30, 'size of vocab', args.vocab_size)
@@ -152,7 +168,12 @@ def main():
     if args.use_fingerprint:
         model.fingerprint_embeddings = fingerprint_embeddings.to(dist_util.dev())
         logger.log(f"### Registered molecular fingerprints to model on device {dist_util.dev()}")
-    
+
+    # 注册Mol2vec嵌入到模型（在模型创建之后）
+    if args.use_mol2vec:
+        model.mol2vec_embeddings = mol2vec_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered Mol2vec embeddings to model on device {dist_util.dev()}")
+
     model.to(dist_util.dev()) 
     pytorch_total_params = sum(p.numel() for p in model.parameters())
 

@@ -612,6 +612,9 @@ class GaussianDiffusion:
         # Extract fingerprint_ids if present
         fingerprint_ids = model_kwargs.pop('fingerprint_idx', None) if model_kwargs else None
 
+        # Extract mol2vec_ids if present
+        mol2vec_ids = model_kwargs.pop('mol2vec_idx', None) if model_kwargs else None
+
         # Compute embeddings or property-conditional embeddings
         if self.num_props:
             props = input_ids_x[:, :self.num_props].clone()
@@ -641,8 +644,8 @@ class GaussianDiffusion:
         terms = {}
         target = x_start
 
-        # Pass graph_ids and fingerprint_ids when calling the model
-        model_output = model(x_t, self._scale_timesteps(t), graph_ids=graph_ids, fingerprint_ids=fingerprint_ids, **model_kwargs)
+        # Pass graph_ids, fingerprint_ids, and mol2vec_ids when calling the model
+        model_output = model(x_t, self._scale_timesteps(t), graph_ids=graph_ids, fingerprint_ids=fingerprint_ids, mol2vec_ids=mol2vec_ids, **model_kwargs)
         assert model_output.shape == target.shape == x_start.shape
 
         # Compute MSE loss

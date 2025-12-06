@@ -23,6 +23,7 @@ def load_data_text(
     loop=True,
     graph_embeddings=None,  # 图嵌入
     fingerprint_embeddings=None,  # 分子指纹
+    mol2vec_embeddings=None,  # Mol2vec嵌入
 ):
     """
     For a dataset, create a generator over (seqs, kwargs) pairs.
@@ -50,6 +51,7 @@ def load_data_text(
         model_emb=model_emb,
         graph_embeddings=graph_embeddings,  # 传入预计算的图嵌入
         fingerprint_embeddings=fingerprint_embeddings,  # 传入预计算的分子指纹
+        mol2vec_embeddings=mol2vec_embeddings,  # 传入预计算的Mol2vec嵌入
     )
 
     if split != 'test':
@@ -206,7 +208,7 @@ def get_corpus(data_args, seq_len, split='train', loaded_vocab=None):
 
 
 class TextDataset(Dataset):
-    def __init__(self, text_datasets, data_args, model_emb=None, graph_embeddings=None, fingerprint_embeddings=None):
+    def __init__(self, text_datasets, data_args, model_emb=None, graph_embeddings=None, fingerprint_embeddings=None, mol2vec_embeddings=None):
         super().__init__()
         self.text_datasets = text_datasets
         self.length = len(self.text_datasets['train'])
@@ -218,6 +220,9 @@ class TextDataset(Dataset):
         # 分子指纹
         self.fingerprint_embeddings = fingerprint_embeddings
         self.use_fingerprint = fingerprint_embeddings is not None
+        # Mol2vec嵌入
+        self.mol2vec_embeddings = mol2vec_embeddings
+        self.use_mol2vec = mol2vec_embeddings is not None
         
 
     def __len__(self):
@@ -241,6 +246,9 @@ class TextDataset(Dataset):
             # 添加指纹索引（通常与图索引相同，都是分子索引）
             if self.use_fingerprint:
                 out_kwargs['fingerprint_idx'] = idx
+            # 添加Mol2vec索引（通常与图索引相同，都是分子索引）
+            if self.use_mol2vec:
+                out_kwargs['mol2vec_idx'] = idx
 
             return arr, out_kwargs
 

@@ -202,6 +202,8 @@ def create_model_and_diffusion(
     use_lightweight_gate=True,  # 保留向后兼容
     gate_mode="hybrid",  # 新增：'lightweight' 或 'hybrid'
     enable_attention=True,  # 新增：仅当gate_mode='hybrid'时有效
+    use_mol2vec=False,  # 新增：是否使用Mol2vec嵌入
+    mol2vec_dim=300,  # 新增：Mol2vec嵌入维度
     **kwargs,
 ):
     model = TransformerNetModel(
@@ -216,6 +218,8 @@ def create_model_and_diffusion(
         graph_embed_dim=graph_embed_dim, # Add
         gate_mode=gate_mode,  # 新增
         enable_attention=enable_attention,  # 新增
+        use_mol2vec=use_mol2vec,  # 新增
+        mol2vec_dim=mol2vec_dim,  # 新增
         **kwargs
     )
 

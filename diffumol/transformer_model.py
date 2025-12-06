@@ -198,6 +198,61 @@ class FingerprintGate(nn.Module):
         return fused_emb
 
 
+class Mol2vecGate(nn.Module):
+    """
+    Mol2vec融合模块 - 拼接+降维版本
+
+    设计理念：
+    - 与FingerprintGate保持一致，使用拼接+降维方式
+    - Mol2vec捕获分子子结构的语义信息（类似Word2Vec）
+    - 与ECFP/Graph嵌入互补，提供额外的语义表示
+
+    参数量：主要来自投影层和降维层
+    """
+    def __init__(self, hidden_dim, mol2vec_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.mol2vec_dim = mol2vec_dim
+
+        # Mol2vec投影到文本维度
+        # 由于Mol2vec已经是密集向量（非稀疏），可以使用更简单的投影
+        self.m2v_proj = nn.Sequential(
+            nn.Linear(mol2vec_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+
+        # 拼接后的降维层：将 [text_emb || mol2vec_emb] 从 2*hidden_dim 降到 hidden_dim
+        self.fusion_proj = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+
+    def forward(self, text_emb, mol2vec):
+        """
+        Args:
+            text_emb: [B, L, hidden_dim] - SMILES文本嵌入
+            mol2vec: [B, mol2vec_dim] - Mol2vec嵌入
+        Returns:
+            fused_emb: [B, L, hidden_dim] - 融合后的嵌入
+        """
+        B, L, D = text_emb.shape
+
+        # 1. 投影Mol2vec到文本维度
+        m2v_proj = self.m2v_proj(mol2vec).unsqueeze(1)  # [B, 1, D]
+
+        # 2. 扩展到序列长度
+        m2v_expanded = m2v_proj.expand(B, L, D)  # [B, L, D]
+
+        # 3. 拼接文本嵌入和Mol2vec嵌入
+        concat_emb = torch.cat([text_emb, m2v_expanded], dim=-1)  # [B, L, 2*D]
+
+        # 4. 降维融合
+        fused_emb = self.fusion_proj(concat_emb)  # [B, L, D]
+
+        return fused_emb
+
+
 class TransformerNetModel(nn.Module):
     """
     The full Transformer model with attention and timestep embedding.
@@ -243,6 +298,8 @@ class TransformerNetModel(nn.Module):
         self.use_graph = kwargs.get("use_graph", False)
         # 分子指纹配置
         self.use_fingerprint = kwargs.get("use_fingerprint", False)
+        # Mol2vec配置
+        self.use_mol2vec = kwargs.get("use_mol2vec", False)
         # gate_mode: 'lightweight' (原Gate) | 'hybrid' (Gate+Attention混合)
         self.gate_mode = kwargs.get("gate_mode", "lightweight")
 
@@ -286,7 +343,20 @@ class TransformerNetModel(nn.Module):
             )
             fp_params = sum(p.numel() for p in self.fingerprint_gate.parameters())
             print(f"### Using Fingerprint Concat+Projection Fusion (params: {fp_params})")
-        
+
+        # 初始化Mol2vec融合（拼接+降维）
+        if self.use_mol2vec:
+            mol2vec_dim = kwargs.get("mol2vec_dim", 300)  # 默认300维
+            self.mol2vec_embeddings = None  # 将在train.py中注册
+
+            # 使用拼接+降维的方式（与ECFP保持一致）
+            self.mol2vec_gate = Mol2vecGate(
+                config.hidden_size,
+                mol2vec_dim
+            )
+            m2v_params = sum(p.numel() for p in self.mol2vec_gate.parameters())
+            print(f"### Using Mol2vec Concat+Projection Fusion (params: {m2v_params})")
+
         self.word_embedding = nn.Embedding(vocab_size, self.input_dims)
         
         if self.num_props:
@@ -365,13 +435,14 @@ class TransformerNetModel(nn.Module):
             raise NotImplementedError
 
 
-    def forward(self, x, timesteps, graph_ids=None, fingerprint_ids=None):
+    def forward(self, x, timesteps, graph_ids=None, fingerprint_ids=None, mol2vec_ids=None):
             """
             Apply the model to an input batch.
             :param x: an [N x C x ...] Tensor of inputs.
             :param timesteps: a 1-D batch of timesteps.
             :param graph_ids: molecular indices used to retrieve graph embeddings (optional)
             :param fingerprint_ids: molecular indices used to retrieve fingerprints (optional)
+            :param mol2vec_ids: molecular indices used to retrieve mol2vec embeddings (optional)
             :return: an [N x C x ...] Tensor of outputs.
             """
             emb_t = self.time_embed(timestep_embedding(timesteps, self.hidden_t_dim))
@@ -387,12 +458,19 @@ class TransformerNetModel(nn.Module):
                     graph_emb = self.graph_embeddings[graph_ids].to(emb_x.device)
                     emb_x = self.graph_gate(emb_x, graph_emb)
 
-            # 分子指纹门控融合（第二层融合）
+            # 分子指纹融合（第二层融合 - 拼接+降维）
             if self.use_fingerprint and fingerprint_ids is not None:
                 if hasattr(self, 'fingerprint_gate') and self.fingerprint_embeddings is not None:
                     # 注意：fingerprint_ids通常与graph_ids相同（都是分子索引）
                     fingerprint = self.fingerprint_embeddings[fingerprint_ids].to(emb_x.device)
                     emb_x = self.fingerprint_gate(emb_x, fingerprint)
+
+            # Mol2vec融合（第三层融合 - 拼接+降维）
+            if self.use_mol2vec and mol2vec_ids is not None:
+                if hasattr(self, 'mol2vec_gate') and self.mol2vec_embeddings is not None:
+                    # 注意：mol2vec_ids通常与graph_ids/fingerprint_ids相同（都是分子索引）
+                    mol2vec = self.mol2vec_embeddings[mol2vec_ids].to(emb_x.device)
+                    emb_x = self.mol2vec_gate(emb_x, mol2vec)
 
             seq_length = x.size(1)
             position_ids = self.position_ids[:, : seq_length]

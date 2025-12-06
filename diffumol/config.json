@@ -50,5 +50,8 @@
   "use_fingerprint": true,
   "fingerprint_dim": 2048,
   "fingerprint_path": "./moses2_ecfp4_2048.npy",
-  "fingerprint_gate_mode": "hybrid"
+  "fingerprint_gate_mode": "hybrid",
+  "use_mol2vec": true,
+  "mol2vec_dim": 300,
+  "mol2vec_path": "./moses2_mol2vec_300d.npy"
 }
