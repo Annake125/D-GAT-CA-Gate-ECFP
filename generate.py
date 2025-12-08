@@ -104,6 +104,30 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
 
+    # 加载并注册图嵌入
+    graph_embeddings = None
+    if args.use_graph:
+        logger.log(f"### Loading graph embeddings from {args.graph_embed_path}")
+        graph_embeddings = th.load(args.graph_embed_path)
+        model.graph_embeddings = graph_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered graph embeddings to model (shape: {graph_embeddings.shape})")
+
+    # 加载并注册分子指纹
+    fingerprint_embeddings = None
+    if args.use_fingerprint:
+        logger.log(f"### Loading molecular fingerprints from {args.fingerprint_path}")
+        fingerprint_embeddings = th.from_numpy(np.load(args.fingerprint_path))
+        model.fingerprint_embeddings = fingerprint_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered fingerprints to model (shape: {fingerprint_embeddings.shape})")
+
+    # 加载并注册Mol2vec嵌入
+    mol2vec_embeddings = None
+    if args.use_mol2vec:
+        logger.log(f"### Loading Mol2vec embeddings from {args.mol2vec_path}")
+        mol2vec_embeddings = th.from_numpy(np.load(args.mol2vec_path))
+        model.mol2vec_embeddings = mol2vec_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered Mol2vec embeddings to model (shape: {mol2vec_embeddings.shape})")
+
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     logger.log(f'### The parameter count is {pytorch_total_params}')
 
@@ -142,7 +166,10 @@ def main():
         data_args=args,
         split=args.split,
         loaded_vocab=tokenizer,
-        model_emb=model_emb.cpu(), 
+        model_emb=model_emb.cpu(),
+        graph_embeddings=graph_embeddings,  # 传入图嵌入
+        fingerprint_embeddings=fingerprint_embeddings,  # 传入分子指纹
+        mol2vec_embeddings=mol2vec_embeddings,  # 传入Mol2vec嵌入
         loop=False
     )
     smiles=[]
