@@ -268,21 +268,37 @@ def main():
           
     pattern="\[START\](.*?)\[END\]"
     regex = re.compile(pattern)
-    molecules=[]  
-    
+    molecules=[]
+
+    # Print first few raw SMILES for debugging
+    if rank == 0:
+        print("\n### First 3 raw generated SMILES:")
+        for i, s in enumerate(smiles[:3]):
+            print(f"  {i+1}: {s[:100]}...")  # Print first 100 chars
+
     for smile in smiles:
         temp=regex.findall(smile)
         if len(temp)!=1:
             continue
-        completion=temp[0].replace(" ","")
-        
+        # Remove spaces and PAD tokens from the generated SMILES
+        completion=temp[0].replace(" ","").replace("[PAD]", "")
+
         mol = get_mol(completion)
         if mol:
             molecules.append(mol)
             
     print(f"nums of smiles: {len(smiles)}")
     print(f"nums of molecules: {len(molecules)}")
-    
+
+    # Check if any valid molecules were generated
+    if len(molecules) == 0:
+        print("ERROR: No valid molecules were generated. This may be due to:")
+        print("  1. All generated SMILES contain invalid tokens (e.g., [PAD])")
+        print("  2. SMILES parsing failures")
+        print("  3. Invalid molecular structures")
+        print("\nPlease check the generated SMILES strings above for issues.")
+        return
+
     all_dfs=[]
     mol_dict = []
 
