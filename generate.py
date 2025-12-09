@@ -248,7 +248,11 @@ def main():
             logits = model.get_logits(sample[:,1:])
             input_ids_mask_ori=input_ids_mask_ori[:,1:]
         else:
-            logits = model.get_logits(sample) 
+            logits = model.get_logits(sample)
+
+        # Mask out PAD token to prevent it from being generated
+        # PAD should only be used for padding, not as valid output
+        logits[:, :, tokenizer.pad_token_id] = -float('inf')
 
         cands = th.topk(logits, k=1, dim=-1)
 
