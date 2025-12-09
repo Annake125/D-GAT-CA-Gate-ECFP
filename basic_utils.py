@@ -72,13 +72,13 @@ class myTokenizer():
     def decode_token(self, seq): #å¯¹å¥å­è¿›è¡Œè§£ç æ"ä½œ
         if isinstance(self.tokenizer, dict):
             seq = seq.squeeze(-1).tolist()
-            while len(seq)>0 and seq[-1] == self.pad_token_id:
-                seq.pop()
+            # Filter out ALL PAD tokens, not just trailing ones
+            seq = [x for x in seq if x != self.pad_token_id]
             tokens = " ".join([self.rev_tokenizer[x] for x in seq]).replace('__ ', '').replace('@@ ', '')
         elif isinstance(self.tokenizer, PreTrainedTokenizerFast):
             seq = seq.squeeze(-1).tolist()
-            while len(seq)>0 and seq[-1] == self.pad_token_id:
-                seq.pop()
+            # Filter out ALL PAD tokens, not just trailing ones
+            seq = [x for x in seq if x != self.pad_token_id]
             tokens = self.tokenizer.decode(seq)
         else:
             assert False, "invalid type of vocab_dict"

@@ -254,6 +254,15 @@ def main():
 
         word_lst_recover = []
 
+        # Diagnostic: print first sequence token IDs
+        if rank == 0 and len(word_lst_recover) == 0:
+            first_seq = cands.indices[0]
+            first_mask = input_ids_mask_ori[0]
+            len_x = len(first_mask) - sum(first_mask).tolist()
+            print(f"\n### Diagnostic - First sequence:")
+            print(f"  Mask length: {len(first_mask)}, Condition length: {len_x}")
+            print(f"  Token IDs (first 20): {first_seq[len_x:len_x+20].tolist()}")
+            print(f"  PAD token ID: {tokenizer.pad_token_id}")
 
         for seq, input_mask in zip(cands.indices, input_ids_mask_ori):
             len_x = len(input_mask) - sum(input_mask).tolist()
@@ -276,16 +285,25 @@ def main():
         for i, s in enumerate(smiles[:3]):
             print(f"  {i+1}: {s[:100]}...")  # Print first 100 chars
 
+    cleaned_smiles = []
     for smile in smiles:
         temp=regex.findall(smile)
         if len(temp)!=1:
             continue
         # Remove spaces and PAD tokens from the generated SMILES
         completion=temp[0].replace(" ","").replace("[PAD]", "")
+        cleaned_smiles.append(completion)
 
         mol = get_mol(completion)
         if mol:
             molecules.append(mol)
+
+    # Print first few cleaned SMILES for debugging
+    if rank == 0:
+        print("\n### First 3 cleaned SMILES (after removing spaces and [PAD]):")
+        for i, s in enumerate(cleaned_smiles[:3]):
+            print(f"  {i+1}: {s}")
+        print(f"\n### Valid molecules: {len(molecules)} / {len(cleaned_smiles)} cleaned SMILES")
             
     print(f"nums of smiles: {len(smiles)}")
     print(f"nums of molecules: {len(molecules)}")
