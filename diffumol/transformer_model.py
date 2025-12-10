@@ -142,50 +142,36 @@ class HybridGraphGate(nn.Module):
         return fused_emb
 
 
-class FingerprintGate(nn.Module):
+class FingerprintFusion(nn.Module):
     """
-    分子指纹门控融合模块（用于ECFP/Morgan指纹）
+    分子指纹拼接融合模块（用于ECFP/Morgan指纹）
 
     设计理念：
-    - 类似于GraphGate，但专门针对分子指纹（高维稀疏向量）
-    - 使用降维投影处理高维指纹（如2048维ECFP4）
-    - 门控机制决定指纹信息的融合比例
-    - 支持lightweight和hybrid两种模式
+    - 直接拼接文本嵌入和指纹嵌入，然后通过投影层降维
+    - 不使用Gate门控机制，保持简单有效
+    - 适用于ECFP对有效性提升有明显帮助的场景
 
     参数量：取决于fingerprint_dim和hidden_dim
     """
-    def __init__(self, hidden_dim, fingerprint_dim, num_heads=2, gate_mode='lightweight', enable_attention=True):
+    def __init__(self, hidden_dim, fingerprint_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.fingerprint_dim = fingerprint_dim
-        self.gate_mode = gate_mode
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-        self.enable_attention = enable_attention
 
-        # 指纹降维投影（从高维稀疏向量到文本维度）
-        # 使用两层MLP进行非线性变换
+        # 指纹投影：fingerprint_dim -> hidden_dim
         self.fp_proj = nn.Sequential(
-            nn.Linear(fingerprint_dim, hidden_dim * 2),
+            nn.Linear(fingerprint_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 2, hidden_dim)
+            nn.Dropout(0.1)
         )
 
-        # 门控网络
-        self.gate = nn.Sequential(
+        # 拼接后的投影：(hidden_dim + hidden_dim) -> hidden_dim
+        # 用于融合文本和指纹信息
+        self.fusion_proj = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.Sigmoid()
+            nn.ReLU(),
+            nn.Dropout(0.1)
         )
-        nn.init.constant_(self.gate[0].bias, -2.0)  # 初期依赖文本
-
-        # 混合模式：添加注意力机制
-        if gate_mode == 'hybrid' and enable_attention:
-            self.q_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
-            self.scale = self.head_dim ** -0.5
-            self.attn_blend = nn.Parameter(torch.tensor(0.2))
-
-        self.last_alpha = None
 
     def forward(self, text_emb, fingerprint):
         """
@@ -198,34 +184,17 @@ class FingerprintGate(nn.Module):
         B, L, D = text_emb.shape
 
         # 1. 投影指纹到文本维度
-        fp_proj = self.fp_proj(fingerprint).unsqueeze(1)  # [B, 1, D]
+        fp_emb = self.fp_proj(fingerprint)  # [B, D]
 
-        # 2. 【Gate机制】计算全局门控权重
-        text_global = text_emb.mean(dim=1, keepdim=True)  # [B, 1, D]
-        gate_input = torch.cat([text_global, fp_proj], dim=-1)
-        alpha = self.gate(gate_input)  # [B, 1, D]
-        self.last_alpha = alpha.detach()
+        # 2. 扩展到序列长度
+        fp_emb = fp_emb.unsqueeze(1).expand(-1, L, -1)  # [B, L, D]
 
-        # 3. 【注意力增强】序列级动态调整（如果启用hybrid模式）
-        if self.gate_mode == 'hybrid' and self.enable_attention:
-            # Multi-head cross-attention
-            q = self.q_proj(text_emb)  # [B, L, D]
-            q = q.reshape(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-            k = fp_proj.reshape(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
+        # 3. 拼接文本嵌入和指纹嵌入
+        concat_emb = torch.cat([text_emb, fp_emb], dim=-1)  # [B, L, 2*D]
 
-            # Scaled dot-product attention
-            attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, heads, L, 1]
-            attn_weights = torch.softmax(attn, dim=-1)
-            attn_out = (attn_weights @ k).transpose(1, 2).reshape(B, L, D)  # [B, L, D]
+        # 4. 通过投影层降维
+        fused_emb = self.fusion_proj(concat_emb)  # [B, L, D]
 
-            # 增量融合
-            attn_delta = attn_out - fp_proj
-            refined_fp = fp_proj + self.attn_blend.sigmoid() * attn_delta
-        else:
-            refined_fp = fp_proj
-
-        # 4. 【最终融合】用Gate控制整体融合强度
-        fused_emb = text_emb + alpha * refined_fp
         return fused_emb
 
 
@@ -305,41 +274,18 @@ class TransformerNetModel(nn.Module):
             else:
                 raise ValueError(f"Invalid gate_mode: {self.gate_mode}. Choose 'lightweight' or 'hybrid'")
 
-        # 初始化分子指纹门控
+        # 初始化分子指纹融合（拼接+降维）
         if self.use_fingerprint:
             fingerprint_dim = kwargs.get("fingerprint_dim", 2048)  # 默认ECFP4 2048位
             self.fingerprint_embeddings = None  # 将在train.py中注册
 
-            # 可选择指纹的门控模式（默认与图嵌入保持一致）
-            fp_gate_mode = kwargs.get("fingerprint_gate_mode", self.gate_mode)
-
-            if fp_gate_mode == "lightweight":
-                # 轻量级门控（不使用注意力）
-                self.fingerprint_gate = FingerprintGate(
-                    config.hidden_size,
-                    fingerprint_dim,
-                    gate_mode='lightweight',
-                    enable_attention=False
-                )
-                fp_params = sum(p.numel() for p in self.fingerprint_gate.parameters())
-                print(f"### Using Lightweight Fingerprint Gate (params: {fp_params})")
-
-            elif fp_gate_mode == "hybrid":
-                # 混合门控-注意力融合
-                enable_attn = kwargs.get("enable_attention", True)
-                self.fingerprint_gate = FingerprintGate(
-                    config.hidden_size,
-                    fingerprint_dim,
-                    num_heads=2,
-                    gate_mode='hybrid',
-                    enable_attention=enable_attn
-                )
-                fp_params = sum(p.numel() for p in self.fingerprint_gate.parameters())
-                attn_status = "ON" if enable_attn else "OFF"
-                print(f"### Using Hybrid Fingerprint Gate (params: {fp_params}, attention: {attn_status})")
-
-            else:
-                raise ValueError(f"Invalid fingerprint_gate_mode: {fp_gate_mode}. Choose 'lightweight' or 'hybrid'")
+            # 使用拼接+投影的融合方式（不使用Gate门控）
+            self.fingerprint_fusion = FingerprintFusion(
+                config.hidden_size,
+                fingerprint_dim
+            )
+            fp_params = sum(p.numel() for p in self.fingerprint_fusion.parameters())
+            print(f"### Using Fingerprint Fusion (Concat+Projection, params: {fp_params})")
         
         self.word_embedding = nn.Embedding(vocab_size, self.input_dims)
         
@@ -441,12 +387,12 @@ class TransformerNetModel(nn.Module):
                     graph_emb = self.graph_embeddings[graph_ids].to(emb_x.device)
                     emb_x = self.graph_gate(emb_x, graph_emb)
 
-            # 分子指纹门控融合（第二层融合）
+            # 分子指纹拼接融合（第二层融合）
             if self.use_fingerprint and fingerprint_ids is not None:
-                if hasattr(self, 'fingerprint_gate') and self.fingerprint_embeddings is not None:
+                if hasattr(self, 'fingerprint_fusion') and self.fingerprint_embeddings is not None:
                     # 注意：fingerprint_ids通常与graph_ids相同（都是分子索引）
                     fingerprint = self.fingerprint_embeddings[fingerprint_ids].to(emb_x.device)
-                    emb_x = self.fingerprint_gate(emb_x, fingerprint)
+                    emb_x = self.fingerprint_fusion(emb_x, fingerprint)
 
             seq_length = x.size(1)
             position_ids = self.position_ids[:, : seq_length]
