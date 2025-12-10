@@ -144,19 +144,21 @@ class HybridGraphGate(nn.Module):
 
 class FingerprintGate(nn.Module):
     """
-    分子指纹融合模块（用于ECFP/Morgan指纹）- 拼接+降维版本
+    分子指纹融合模块（用于ECFP/Morgan指纹）- 拼接+降维版本 + Conditional Dropout
 
     设计理念：
     - 删除Gate门控机制，改用简单的拼接+降维
     - ECFP对有效性提升很有帮助，门控反而限制了其作用
     - 直接将指纹信息与文本嵌入拼接后降维，让模型自由学习融合方式
+    - **新增Conditional Dropout**: 训练时随机丢弃ECFP，让模型学会在无ECFP时也能工作
 
     参数量：主要来自投影层和降维层
     """
-    def __init__(self, hidden_dim, fingerprint_dim):
+    def __init__(self, hidden_dim, fingerprint_dim, dropout_prob=0.2):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.fingerprint_dim = fingerprint_dim
+        self.dropout_prob = dropout_prob  # 训练时随机丢弃ECFP的概率
 
         # 指纹降维投影（从高维稀疏向量到文本维度）
         # 使用两层MLP进行非线性变换
@@ -177,11 +179,21 @@ class FingerprintGate(nn.Module):
         """
         Args:
             text_emb: [B, L, hidden_dim] - SMILES文本嵌入
-            fingerprint: [B, fingerprint_dim] - 分子指纹（ECFP/Morgan）
+            fingerprint: [B, fingerprint_dim] or None - 分子指纹（ECFP/Morgan）
         Returns:
             fused_emb: [B, L, hidden_dim] - 融合后的嵌入
         """
         B, L, D = text_emb.shape
+
+        # Conditional Dropout: 训练时随机丢弃ECFP，或生成时fingerprint为None
+        if fingerprint is None:
+            # 生成时没有ECFP信息，直接返回文本嵌入
+            return text_emb
+
+        if self.training and self.dropout_prob > 0:
+            # 训练时以一定概率丢弃ECFP，让模型学会不依赖它
+            if torch.rand(1).item() < self.dropout_prob:
+                return text_emb
 
         # 1. 投影指纹到文本维度
         fp_proj = self.fp_proj(fingerprint).unsqueeze(1)  # [B, 1, D]
@@ -274,18 +286,20 @@ class TransformerNetModel(nn.Module):
             else:
                 raise ValueError(f"Invalid gate_mode: {self.gate_mode}. Choose 'lightweight' or 'hybrid'")
 
-        # 初始化分子指纹融合（拼接+降维）
+        # 初始化分子指纹融合（拼接+降维 + Conditional Dropout）
         if self.use_fingerprint:
             fingerprint_dim = kwargs.get("fingerprint_dim", 2048)  # 默认ECFP4 2048位
+            fingerprint_dropout = kwargs.get("fingerprint_dropout", 0.2)  # Conditional Dropout概率
             self.fingerprint_embeddings = None  # 将在train.py中注册
 
-            # 使用拼接+降维的方式（不使用Gate门控）
+            # 使用拼接+降维的方式（不使用Gate门控）+ Conditional Dropout
             self.fingerprint_gate = FingerprintGate(
                 config.hidden_size,
-                fingerprint_dim
+                fingerprint_dim,
+                dropout_prob=fingerprint_dropout
             )
             fp_params = sum(p.numel() for p in self.fingerprint_gate.parameters())
-            print(f"### Using Fingerprint Concat+Projection Fusion (params: {fp_params})")
+            print(f"### Using Fingerprint Concat+Projection Fusion with Conditional Dropout={fingerprint_dropout} (params: {fp_params})")
         
         self.word_embedding = nn.Embedding(vocab_size, self.input_dims)
         
@@ -388,11 +402,15 @@ class TransformerNetModel(nn.Module):
                     emb_x = self.graph_gate(emb_x, graph_emb)
 
             # 分子指纹门控融合（第二层融合）
-            if self.use_fingerprint and fingerprint_ids is not None:
-                if hasattr(self, 'fingerprint_gate') and self.fingerprint_embeddings is not None:
-                    # 注意：fingerprint_ids通常与graph_ids相同（都是分子索引）
+            # 支持训练时有ECFP，生成时无ECFP的情况
+            if self.use_fingerprint and hasattr(self, 'fingerprint_gate'):
+                if fingerprint_ids is not None and self.fingerprint_embeddings is not None:
+                    # 训练/推理时有ECFP信息：提取并融合
                     fingerprint = self.fingerprint_embeddings[fingerprint_ids].to(emb_x.device)
                     emb_x = self.fingerprint_gate(emb_x, fingerprint)
+                else:
+                    # 生成时无ECFP信息：传入None，FingerprintGate会返回原始text_emb
+                    emb_x = self.fingerprint_gate(emb_x, None)
 
             seq_length = x.size(1)
             position_ids = self.position_ids[:, : seq_length]

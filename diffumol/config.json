@@ -50,5 +50,6 @@
   "use_fingerprint": true,
   "fingerprint_dim": 2048,
   "fingerprint_path": "./moses2_ecfp4_2048.npy",
-  "fingerprint_gate_mode": "hybrid"
+  "fingerprint_gate_mode": "hybrid",
+  "fingerprint_dropout": 0.2
 }
