@@ -107,7 +107,30 @@ def main():
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     logger.log(f'### The parameter count is {pytorch_total_params}')
 
+    # Load graph embeddings if needed
+    graph_embeddings = None
+    if args.use_graph:
+        logger.log(f"### Loading graph embeddings from {args.graph_embed_path}")
+        graph_embeddings = th.load(args.graph_embed_path)
+        logger.log(f"### Loaded graph embeddings with shape {graph_embeddings.shape}")
+
+    # Load molecular fingerprints if needed
+    fingerprint_embeddings = None
+    if args.use_fingerprint:
+        logger.log(f"### Loading molecular fingerprints from {args.fingerprint_path}")
+        fingerprint_embeddings = th.from_numpy(np.load(args.fingerprint_path))
+        logger.log(f"### Loaded fingerprints with shape {fingerprint_embeddings.shape}")
+
     model.eval().requires_grad_(False).to(dist_util.dev())
+
+    # Register embeddings to model after moving to device
+    if args.use_graph and graph_embeddings is not None:
+        model.graph_embeddings = graph_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered graph embeddings to model")
+
+    if args.use_fingerprint and fingerprint_embeddings is not None:
+        model.fingerprint_embeddings = fingerprint_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered fingerprint embeddings to model")
 
     tokenizer = load_tokenizer(args)
 
@@ -142,7 +165,9 @@ def main():
         data_args=args,
         split=args.split,
         loaded_vocab=tokenizer,
-        model_emb=model_emb.cpu(), 
+        model_emb=model_emb.cpu(),
+        graph_embeddings=graph_embeddings,  # Pass graph embeddings
+        fingerprint_embeddings=fingerprint_embeddings,  # Pass fingerprint embeddings
         loop=False
     )
     smiles=[]
@@ -191,28 +216,37 @@ def main():
             continue
 
         input_ids_x = cond.pop('input_ids').to(th.float).to(dist_util.dev())
-        input_ids_mask = cond.pop('input_mask')       
-        
-        
-        
+        input_ids_mask = cond.pop('input_mask')
+
+        # Extract graph and fingerprint indices from cond for model conditioning
+        # This is critical for ECFP fusion during generation
+        graph_idx = cond.pop('graph_idx', None) if 'graph_idx' in cond else None
+        fingerprint_idx = cond.pop('fingerprint_idx', None) if 'fingerprint_idx' in cond else None
+
         #------------------------x_start------------------------
-            
+
         if args.num_props:
             props=input_ids_x[:,:args.num_props].clone()
-            props = model.get_props(props)  
+            props = model.get_props(props)
             x_start= th.cat([props, model.get_embeds(input_ids_x[:,args.num_props:])], 1)
             input_ids_mask = input_ids_mask[:,args.num_props-1:].contiguous()
         else:
             x_start = model.get_embeds(input_ids_x)
-        
+
         #--------------------------------------------------------
-        
+
         input_ids_mask_ori = input_ids_mask
         noise = th.randn_like(x_start)
         input_ids_mask = th.broadcast_to(input_ids_mask.unsqueeze(dim=-1), x_start.shape).to(dist_util.dev())
         x_noised = th.where(input_ids_mask == 0, x_start, noise)
 
+        # Pass graph and fingerprint indices to model during denoising
+        # This ensures ECFP information is available at each diffusion step
         model_kwargs = {}
+        if graph_idx is not None:
+            model_kwargs['graph_idx'] = graph_idx.to(dist_util.dev())
+        if fingerprint_idx is not None:
+            model_kwargs['fingerprint_idx'] = fingerprint_idx.to(dist_util.dev())
 
         if args.step == args.diffusion_steps:
             args.use_ddim = False
