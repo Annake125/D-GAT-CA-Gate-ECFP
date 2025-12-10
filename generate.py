@@ -109,11 +109,18 @@ def main():
 
     model.eval().requires_grad_(False).to(dist_util.dev())
 
+    # Load fingerprint embeddings if used (same as train.py)
+    if args.use_fingerprint:
+        logger.log(f"### Loading molecular fingerprints from {args.fingerprint_path}")
+        fingerprint_embeddings = th.from_numpy(np.load(args.fingerprint_path))
+        model.fingerprint_embeddings = fingerprint_embeddings.to(dist_util.dev())
+        logger.log(f"### Registered molecular fingerprints to model for generation")
+
     tokenizer = load_tokenizer(args)
 
     model_emb = th.nn.Embedding(
-        num_embeddings=tokenizer.vocab_size, 
-        embedding_dim=args.hidden_dim, 
+        num_embeddings=tokenizer.vocab_size,
+        embedding_dim=args.hidden_dim,
         _weight=model.word_embedding.weight.clone().cpu()
     ).eval().requires_grad_(False)
     
@@ -191,28 +198,36 @@ def main():
             continue
 
         input_ids_x = cond.pop('input_ids').to(th.float).to(dist_util.dev())
-        input_ids_mask = cond.pop('input_mask')       
-        
-        
-        
+        input_ids_mask = cond.pop('input_mask')
+
+        # Extract graph_idx and fingerprint_idx if present (for ECFP/Graph fusion)
+        graph_idx = cond.pop('graph_idx', None)
+        fingerprint_idx = cond.pop('fingerprint_idx', None)
+
+
         #------------------------x_start------------------------
-            
+
         if args.num_props:
             props=input_ids_x[:,:args.num_props].clone()
-            props = model.get_props(props)  
+            props = model.get_props(props)
             x_start= th.cat([props, model.get_embeds(input_ids_x[:,args.num_props:])], 1)
             input_ids_mask = input_ids_mask[:,args.num_props-1:].contiguous()
         else:
             x_start = model.get_embeds(input_ids_x)
-        
+
         #--------------------------------------------------------
-        
+
         input_ids_mask_ori = input_ids_mask
         noise = th.randn_like(x_start)
         input_ids_mask = th.broadcast_to(input_ids_mask.unsqueeze(dim=-1), x_start.shape).to(dist_util.dev())
         x_noised = th.where(input_ids_mask == 0, x_start, noise)
 
+        # Prepare model_kwargs with graph and fingerprint indices (CRITICAL for ECFP fusion!)
         model_kwargs = {}
+        if graph_idx is not None:
+            model_kwargs['graph_idx'] = graph_idx.to(dist_util.dev()) if isinstance(graph_idx, th.Tensor) else th.tensor(graph_idx).to(dist_util.dev())
+        if fingerprint_idx is not None:
+            model_kwargs['fingerprint_idx'] = fingerprint_idx.to(dist_util.dev()) if isinstance(fingerprint_idx, th.Tensor) else th.tensor(fingerprint_idx).to(dist_util.dev())
 
         if args.step == args.diffusion_steps:
             args.use_ddim = False
