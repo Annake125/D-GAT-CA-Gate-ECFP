@@ -291,6 +291,15 @@ def main():
 
     results = pd.DataFrame(mol_dict)
 
+    # 处理空结果的情况（当所有生成的SMILES都无效时）
+    if len(results) == 0:
+        print("### WARNING: No valid molecules generated! All SMILES failed to parse.")
+        print("### Creating empty results DataFrame...")
+        results = pd.DataFrame(columns=['molecule', 'smiles', 'qed', 'sas', 'logp', 'tpsa', 'validity', 'unique', 'novelty'])
+        results.to_csv(csv_path, index=False)
+        print(f"### Saved empty results to {csv_path}")
+        return
+
     canon_smiles = [canonic_smiles(s) for s in results['smiles']]
     unique_smiles = list(set(canon_smiles))
     
