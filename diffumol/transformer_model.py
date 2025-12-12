@@ -149,6 +149,7 @@ class FingerprintFusion(nn.Module):
     设计理念：
     - 直接拼接文本嵌入和指纹嵌入，然后通过投影层降维
     - 不使用Gate门控机制，保持简单有效
+    - fp_proj结构与旧FingerprintGate兼容（可加载旧权重）
     - 适用于ECFP对有效性提升有明显帮助的场景
 
     参数量：取决于fingerprint_dim和hidden_dim
@@ -158,20 +159,18 @@ class FingerprintFusion(nn.Module):
         self.hidden_dim = hidden_dim
         self.fingerprint_dim = fingerprint_dim
 
-        # 指纹投影：fingerprint_dim -> hidden_dim
+        # 指纹投影：与旧FingerprintGate的fp_proj结构保持一致
+        # 这样可以加载旧模型的权重！
         self.fp_proj = nn.Sequential(
-            nn.Linear(fingerprint_dim, hidden_dim),
+            nn.Linear(fingerprint_dim, hidden_dim * 2),
             nn.ReLU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim * 2, hidden_dim)
         )
 
         # 拼接后的投影：(hidden_dim + hidden_dim) -> hidden_dim
         # 用于融合文本和指纹信息
-        self.fusion_proj = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
+        self.fusion_proj = nn.Linear(hidden_dim * 2, hidden_dim)
 
     def forward(self, text_emb, fingerprint):
         """
@@ -183,7 +182,7 @@ class FingerprintFusion(nn.Module):
         """
         B, L, D = text_emb.shape
 
-        # 1. 投影指纹到文本维度
+        # 1. 投影指纹到文本维度（使用与旧模型兼容的fp_proj）
         fp_emb = self.fp_proj(fingerprint)  # [B, D]
 
         # 2. 扩展到序列长度
