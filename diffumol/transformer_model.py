@@ -191,8 +191,12 @@ class FingerprintFusion(nn.Module):
         # 3. 拼接文本嵌入和指纹嵌入
         concat_emb = torch.cat([text_emb, fp_emb], dim=-1)  # [B, L, 2*D]
 
-        # 4. 通过投影层降维
-        fused_emb = self.fusion_proj(concat_emb)  # [B, L, D]
+        # 4. 投影学习增强信息（不直接替换）
+        enhancement = self.fusion_proj(concat_emb)  # [B, L, D]
+
+        # 5. 残差连接：保留原始text_emb，添加ECFP增强
+        # 这样既实现了拼接+降维，又不会丢失ECFP或文本信息
+        fused_emb = text_emb + enhancement
 
         return fused_emb
 
