@@ -41,6 +41,8 @@
   "rescale_learned_sigmas": false,
   "sigma_small": false,
   "emb_scale_factor": 1.0,
+  "self_cond_prob": 0.5,
+  "self_cond_inference": true,
   "use_graph": true,
   "graph_embed_dim": 128,
   "graph_embed_path": "./hg_embed.pt",

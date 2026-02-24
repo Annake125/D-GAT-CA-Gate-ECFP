@@ -141,7 +141,9 @@ class GaussianDiffusion:
         sigma_small,
         use_kl,
         rescale_timesteps=False,
-        num_props=0
+        num_props=0,
+        self_cond_prob=0.0,
+        self_cond_inference=False,
     ):
         self.rescale_timesteps = rescale_timesteps
         self.predict_xstart = predict_xstart
@@ -150,6 +152,8 @@ class GaussianDiffusion:
         self.sigma_small = sigma_small
         self.use_kl = use_kl
         self.num_props=num_props
+        self.self_cond_prob = self_cond_prob
+        self.self_cond_inference = self_cond_inference
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -311,9 +315,18 @@ class GaussianDiffusion:
 
         B, C = x.size(0), x.size(-1)
         assert t.shape == (B,)
-        # print(x.shape)
+
+        # Self-conditioning during inference: use previous step's prediction as self_conditions
+        # self_conditions is initialized to zeros in the sampling loop and updated after each step
+        if self.self_cond_inference and 'self_conditions' not in model_kwargs:
+            model_kwargs['self_conditions'] = th.zeros_like(x)
+
         model_output = model(x, self._scale_timesteps(t), **model_kwargs)
-        
+
+        # Update self_conditions with current prediction for next step
+        if self.self_cond_inference:
+            model_kwargs['self_conditions'] = model_output.detach()
+
         # for fixedlarge, we set the initial (log-)variance like so
         # to get a better decoder log likelihood.
         model_variance = np.append(self.posterior_variance[1], self.betas[1:])
@@ -503,6 +516,10 @@ class GaussianDiffusion:
             from tqdm.auto import tqdm
             indices = tqdm(indices)
 
+        # Initialize self_conditions for self-conditioning during inference
+        if self.self_cond_inference and 'self_conditions' not in model_kwargs:
+            model_kwargs['self_conditions'] = th.zeros(*shape, device=device)
+
         for i in indices: # from T to 0
             t = th.tensor([i] * shape[0], device=device)
             if not clamp_first:
@@ -640,6 +657,14 @@ class GaussianDiffusion:
 
         terms = {}
         target = x_start
+
+        # Self-conditioning: with probability self_cond_prob, first get a prediction
+        # with zeros as self_conditions, then use that prediction for the real forward pass
+        model_kwargs['self_conditions'] = th.zeros_like(x_t)
+        if self.self_cond_prob > 0 and np.random.uniform() < self.self_cond_prob:
+            with th.no_grad():
+                sc_output = model(x_t, self._scale_timesteps(t), graph_ids=graph_ids, fingerprint_ids=fingerprint_ids, **model_kwargs)
+            model_kwargs['self_conditions'] = sc_output.detach()
 
         # Pass graph_ids and fingerprint_ids when calling the model
         model_output = model(x_t, self._scale_timesteps(t), graph_ids=graph_ids, fingerprint_ids=fingerprint_ids, **model_kwargs)
@@ -879,6 +904,10 @@ class GaussianDiffusion:
 
             indices = tqdm(indices)
 
+        # Initialize self_conditions for self-conditioning during inference
+        if self.self_cond_inference and 'self_conditions' not in model_kwargs:
+            model_kwargs['self_conditions'] = th.zeros(*shape, device=device)
+
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
@@ -1025,14 +1054,15 @@ class _WrappedModel:
         self.original_num_steps = original_num_steps
 
     def __call__(self, x, ts, **kwargs):
-        # print(ts)
         map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
         new_ts = map_tensor[ts]
-        # print(new_ts)
         if self.rescale_timesteps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
-        # temp = self.model(x, new_ts, **kwargs)
-        # print(temp.shape)
-        # return temp
-        # print(new_ts)
         return self.model(x, new_ts, **kwargs)
+
+    def __getattr__(self, name):
+        """Forward attribute access to the wrapped model."""
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.model, name)

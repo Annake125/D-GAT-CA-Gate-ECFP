@@ -394,6 +394,13 @@ class TransformerNetModel(nn.Module):
             self.output_down_proj = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
                                                 nn.Tanh(), nn.Linear(config.hidden_size, self.output_dims))
 
+        # Self-conditioning projection: projects previous x0 prediction to be added to input
+        self.self_cond_proj = nn.Sequential(
+            nn.Linear(input_dims, config.hidden_size),
+            nn.Tanh(),
+            nn.Linear(config.hidden_size, config.hidden_size),
+        )
+
     def get_embeds(self, input_ids):
         return self.word_embedding(input_ids.to(th.int64))
 
@@ -419,11 +426,12 @@ class TransformerNetModel(nn.Module):
             raise NotImplementedError
 
 
-    def forward(self, x, timesteps, graph_ids=None, fingerprint_ids=None):
+    def forward(self, x, timesteps, self_conditions=None, graph_ids=None, fingerprint_ids=None, **kwargs):
             """
             Apply the model to an input batch.
             :param x: an [N x C x ...] Tensor of inputs.
             :param timesteps: a 1-D batch of timesteps.
+            :param self_conditions: an [N x C x ...] Tensor of previous x0 prediction for self-conditioning.
             :param graph_ids: molecular indices used to retrieve graph embeddings (optional)
             :param fingerprint_ids: molecular indices used to retrieve fingerprints (optional)
             :return: an [N x C x ...] Tensor of outputs.
@@ -434,6 +442,10 @@ class TransformerNetModel(nn.Module):
                 emb_x = self.input_up_proj(x)
             else:
                 emb_x = x
+
+            # Self-conditioning: add projected previous prediction to input embedding
+            if self_conditions is not None:
+                emb_x = emb_x + self.self_cond_proj(self_conditions)
 
             # 图嵌入门控融合（第一层融合）
             if self.use_graph and graph_ids is not None:

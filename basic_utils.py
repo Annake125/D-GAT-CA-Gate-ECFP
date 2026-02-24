@@ -233,7 +233,9 @@ def create_model_and_diffusion(
         sigma_small = sigma_small,
         use_kl = use_kl,
         rescale_learned_sigmas=rescale_learned_sigmas,
-        num_props=kwargs["num_props"]
+        num_props=kwargs["num_props"],
+        self_cond_prob=kwargs.get("self_cond_prob", 0.0),
+        self_cond_inference=kwargs.get("self_cond_inference", False),
     )
 
     return model, diffusion
