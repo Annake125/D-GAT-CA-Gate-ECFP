@@ -518,7 +518,7 @@ class GaussianDiffusion:
 
         # Initialize self_conditions for self-conditioning during inference
         if self.self_cond_inference and 'self_conditions' not in model_kwargs:
-            model_kwargs['self_conditions'] = th.zeros(*shape, device=device)
+            model_kwargs['self_conditions'] = th.zeros_like(sample_x)
 
         for i in indices: # from T to 0
             t = th.tensor([i] * shape[0], device=device)
@@ -906,7 +906,7 @@ class GaussianDiffusion:
 
         # Initialize self_conditions for self-conditioning during inference
         if self.self_cond_inference and 'self_conditions' not in model_kwargs:
-            model_kwargs['self_conditions'] = th.zeros(*shape, device=device)
+            model_kwargs['self_conditions'] = th.zeros_like(sample_x)
 
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
